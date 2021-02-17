@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  EKS managed node group
+
+Parameters:
+  EnvironmentName:
+    Type: String 
+  
+  NodeMin:
+    Type: String 
+  
+  NodeMax:
+    Type: String 
+  
+  NodeDesired:
+    Type: String 
+  
+  NodeInstanceType:
+    Type: String
+  
+  Label:
+    Type: String
+
+  KeyName:
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Description: The EC2 Key Pair to allow SSH access to the instances
+
+Resources:
+#-----     EKS Node group    -----#    
+  EKSNodegroup:
+    Type: 'AWS::EKS::Nodegroup'
+    Properties:
+      ClusterName:
+        !ImportValue 
+        'Fn::Sub': '${EnvironmentName}-eks-cluster'
+      NodeRole:
+        !ImportValue 
+        'Fn::Sub': '${EnvironmentName}-eks-node-role'
+      NodegroupName: !Sub ${EnvironmentName}-eks-${Label}-node-group
+      ScalingConfig:
+        MinSize: !Ref NodeMin
+        DesiredSize: !Ref NodeDesired
+        MaxSize: !Ref NodeMax
+      Labels:
+        Name: !Ref Label
+      # Need to use DefaultVersionNumber instead of LatestVersion. Limitation in CF when using launch templates
+      LaunchTemplate:
+        Id: !Ref EKSLaunchTemplate
+        Version: !GetAtt EKSLaunchTemplate.DefaultVersionNumber
+      Subnets:
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-eks-subnet1' 
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-eks-subnet2'
+
+  EKSLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+        LaunchTemplateName: !Sub ${EnvironmentName}-eks-${Label}-launch-template
+        LaunchTemplateData:
+          BlockDeviceMappings:
+            - DeviceName: "/dev/xvda"
+              Ebs:
+                DeleteOnTermination: true
+                Encrypted: true
+                VolumeType: "gp2"
+                VolumeSize: 20
+          InstanceType: !Ref NodeInstanceType
+          KeyName: !Ref KeyName
+          TagSpecifications: 
+            - ResourceType: instance
+              Tags:
+                - Key: "Name"
+                  Value: !Sub ${EnvironmentName}-eks-node
+            - ResourceType: volume
+              Tags:
+                - Key: "Name"
+                  Value: !Sub ${EnvironmentName}-eks-node

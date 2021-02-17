@@ -1,0 +1,10 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "development"
+  },
+  {
+    "ParameterKey": "EKSversion",
+    "ParameterValue": "1.18"
+  }
+]

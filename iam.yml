@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  IAM users for logging into the EKS cluster
+
+Resources:
+  EKSAdmin:
+    Type: "AWS::IAM::User"
+    Properties:
+      UserName: bitbucket-eks-admin
+
+  EKSAdminRole: 
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: bitbucket-eks-admin
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              AWS: 
+                - !GetAtt EKSAdmin.Arn
+            Action: 
+              - "sts:AssumeRole"

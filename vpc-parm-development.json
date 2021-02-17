@@ -1,0 +1,42 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "development"
+  },
+  {
+    "ParameterKey": "VpcCIDR",
+    "ParameterValue": "10.0.4.0/22"
+  },
+  {
+    "ParameterKey": "PublicSubnet1CIDR",
+    "ParameterValue": "10.0.4.0/25"
+  },
+  {
+    "ParameterKey": "PublicSubnet2CIDR",
+    "ParameterValue": "10.0.4.128/25"
+  },
+  {
+    "ParameterKey": "PrivateSubnet1CIDR",
+    "ParameterValue": "10.0.5.0/26"
+  },
+  {
+    "ParameterKey": "PrivateSubnet2CIDR",
+    "ParameterValue": "10.0.5.64/26"
+  },
+  {
+    "ParameterKey": "DataSubnet1CIDR",
+    "ParameterValue": "10.0.5.128/26"
+  },
+  {
+    "ParameterKey": "DataSubnet2CIDR",
+    "ParameterValue": "10.0.5.192/26"
+  },
+  {
+    "ParameterKey": "EKSSubnet1CIDR",
+    "ParameterValue": "10.0.6.0/24"
+  },
+  {
+    "ParameterKey": "EKSSubnet2CIDR",
+    "ParameterValue": "10.0.7.0/24"
+  }
+]

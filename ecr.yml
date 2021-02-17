@@ -1,0 +1,14 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  BTR Elastic Container Registry
+
+Parameters:
+  ApplicationName:
+    Type: String 
+
+Resources:
+#-----     Elastic Container Repo     -----#
+  ECRrepository: 
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: !Sub "${ApplicationName}"

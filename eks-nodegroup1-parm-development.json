@@ -1,0 +1,30 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "development"
+  },
+  {
+    "ParameterKey": "Label",
+    "ParameterValue": "ng-1"
+  },
+  {
+    "ParameterKey": "NodeMin",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "NodeMax",
+    "ParameterValue": "3"
+  },
+  {
+    "ParameterKey": "NodeDesired",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "NodeInstanceType",
+    "ParameterValue": "t3.medium"
+  },
+  {
+    "ParameterKey": "KeyName",
+    "ParameterValue": "eks-node-key-pair-development"
+  }
+]

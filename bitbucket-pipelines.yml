@@ -1,0 +1,594 @@
+pipelines:
+  default: # Steps below will kick off every time a code commit is detected on any branch.
+    - step:
+        name: ECR - eks-demo
+        script:
+          - pipe: atlassian/aws-cloudformation-deploy:0.9.1
+            variables:
+              AWS_DEFAULT_REGION: "us-east-1"
+              STACK_NAME: "ecr-eks-demo"
+              TEMPLATE: "./ecr.yml"
+              WAIT: 'false'
+              STACK_PARAMETERS: >
+                    [{
+                      "ParameterKey": "ApplicationName",
+                      "ParameterValue": "eks-demo"
+                    }]
+
+    - step:
+        name: IAM - EKS admin
+        script:
+          - pipe: atlassian/aws-cloudformation-deploy:0.9.1
+            variables:
+              AWS_DEFAULT_REGION: "us-east-1"
+              STACK_NAME: "eks-iam"
+              TEMPLATE: "./iam.yml"
+              WAIT: 'true'
+              CAPABILITIES: ['CAPABILITY_IAM', 'CAPABILITY_AUTO_EXPAND', 'CAPABILITY_NAMED_IAM']
+
+  branches: # Pipelines below will automatically kick off with a code commit to the particular branch
+
+      master:
+      # Left blank for branch naming
+
+##############################
+#### DEVELOPMENT SECTION #####
+##############################
+      development:
+      - step:
+          name: Network stack
+          script:
+            - export PARAMETERS=$(cat ./vpc-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-vpc"
+                TEMPLATE: "./vpc.yml"
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "vpc.yml"
+               - "vpc-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: EKS cluster
+          script:
+            - export PARAMETERS=$(cat ./eks-cluster-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks"
+                TEMPLATE: "./eks-cluster.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Update API endpoint from public to public/private
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH > describeCluster.json
+            - check=$(jq -r .cluster.resourcesVpcConfig.endpointPrivateAccess describeCluster.json)
+            - if [ "$check" == "true" ]; then
+            - echo endpointPrivateAccess already set
+            - else 
+            - aws eks update-cluster-config --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH --resources-vpc-config endpointPublicAccess=true,endpointPrivateAccess=true
+            - sleep 30
+            - aws eks wait cluster-active --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH
+            - fi
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: EKS node group 1
+          script:
+            - export PARAMETERS=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks-nodegroup-1"
+                TEMPLATE: "./eks-nodegroup.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
+          # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
+          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
+          name: Update Node Group 1 vesion
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - export NODE_LABEL=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
+            - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
+            - echo DefaultVersion matches LatestVersion
+            - else 
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+          condition:
+            changesets:
+              includePaths:
+               - "sponsor-portal-eks-nodegroup.yml"
+               - "sponsor-portal-eks-nodegroup1-parm-$DEV_ENVIRONMENT.json"
+
+      - step:
+          name: EKS node group 2
+          script:
+            - export PARAMETERS=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks-nodegroup-2"
+                TEMPLATE: "./eks-nodegroup.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+             includePaths:
+              - "eks-nodegroup.yml"
+              - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
+          # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
+          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
+          name: Update Node Group 2 vesion
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - export NODE_LABEL=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - export TEMPLATE_VERSION=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --query 'LaunchTemplates[].LatestVersionNumber' --output text)
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+          condition:
+            changesets:
+              includePaths:
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: K8S metric server
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'k8s-metrics-server.yaml'
+          condition:
+            changesets:
+              includePaths:
+               - "k8s-metrics-server.yaml"
+          # Add the example command below to each pod that needs hpa enabled on
+            #kubectl autoscale deployment DEPLOYMENTNAME --cpu-percent=50 --min=1 --max=10
+
+          # Below will check to see if the HPA is enabled and details
+            #kubectl describe hpa
+
+      - step:
+          name: Cluster Autoscaler
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl apply -f cluster-autoscaler-autodiscover_$BITBUCKET_BRANCH.yaml
+            - kubectl -n kube-system annotate --overwrite deployment.apps/cluster-autoscaler cluster-autoscaler.kubernetes.io/safe-to-evict="false"
+            - kubectl -n kube-system set image deployment.apps/cluster-autoscaler cluster-autoscaler=gcr.io/k8s-artifacts-prod/autoscaling/cluster-autoscaler:v1.17.4
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Update ConfigMap
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - 'SSOROLE="    - rolearn: arn:aws:iam::ACCOUNTID:role/ROLENAME\n      username: build\n      groups:\n        - system:masters"'
+            - 'kubectl get -n kube-system configmap/aws-auth -o yaml | awk "/mapRoles: \|/{print;print \"$SSOROLE\";next}1" > /tmp/aws-auth-patch.yml'
+            - kubectl patch configmap/aws-auth -n kube-system --patch "$(cat /tmp/aws-auth-patch.yml)"
+            - 'IAMUSER="  mapUsers: \|\n    - userarn: arn:aws:iam::ACCOUNTID:user/bitbucket-eks-admin\n      username: bitbucket-eks-admin\n      groups:\n        - system:masters"'
+            - 'kubectl get -n kube-system configmap/aws-auth -o yaml | awk "/data:/{print;print \"$IAMUSER\";next}1" > /tmp/aws-auth-patch.yml'
+            - kubectl patch configmap/aws-auth -n kube-system --patch "$(cat /tmp/aws-auth-patch.yml)"
+          condition:
+            changesets:
+              includePaths:
+               - "sponsor-portal-eks-cluster.yml"
+               - "sponsor-portal-eks-cluster-parm-$DEV_ENVIRONMENT.json"
+
+      - step:
+          name: OpenID connect for Ingress Controller
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - eksctl utils associate-iam-oidc-provider --cluster=eks-cluster-$BITBUCKET_BRANCH --approve
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Ingress Controller IAM role
+          script:
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-ingress-controller"
+                TEMPLATE: "./eks-ingress-controller.yml"
+                WAIT: 'true'
+                CAPABILITIES: ['CAPABILITY_IAM', 'CAPABILITY_AUTO_EXPAND', 'CAPABILITY_NAMED_IAM']
+                STACK_PARAMETERS: >
+                      [{
+                        "ParameterKey": "EnvironmentName",
+                        "ParameterValue": $BITBUCKET_BRANCH
+                      }]
+          condition:
+            changesets:
+              includePaths:
+               - "eks-ingress-controller.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: RBAC policy for Ingress controller
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'alb-ingress-rbac.yml'
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Associate IAM role to EKS Service account for ingress controller
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl annotate serviceaccount -n kube-system alb-ingress-controller eks.amazonaws.com/role-arn=arn:aws:iam::ACCOUNTID:role/eks-alb-ingress-controller-$BITBUCKET_BRANCH --overwrite
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Deploy Ingress controller
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'alb-ingress-controller-$BITBUCKET_BRANCH.yml'
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-controller-$BITBUCKET_BRANCH.yml"
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+
+##############################
+##### PRODUCTION SECTION #####
+##############################
+
+      production:
+      - step:
+          name: Network stack
+          script:
+            - export PARAMETERS=$(cat ./vpc-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-vpc"
+                TEMPLATE: "./vpc.yml"
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "vpc.yml"
+               - "vpc-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: EKS cluster
+          script:
+            - export PARAMETERS=$(cat ./eks-cluster-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks"
+                TEMPLATE: "./eks-cluster.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Update API endpoint from public to public/private
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH > describeCluster.json
+            - check=$(jq -r .cluster.resourcesVpcConfig.endpointPrivateAccess describeCluster.json)
+            - if [ "$check" == "true" ]; then
+            - echo endpointPrivateAccess already set
+            - else 
+            - aws eks update-cluster-config --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH --resources-vpc-config endpointPublicAccess=true,endpointPrivateAccess=true
+            - sleep 30
+            - aws eks wait cluster-active --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH
+            - fi
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: EKS node group 1
+          script:
+            - export PARAMETERS=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks-nodegroup-1"
+                TEMPLATE: "./eks-nodegroup.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+              includePaths:
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
+          # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
+          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
+          name: Update Node Group 1 vesion
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - export NODE_LABEL=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
+            - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
+            - echo DefaultVersion matches LatestVersion
+            - else 
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+          condition:
+            changesets:
+              includePaths:
+               - "sponsor-portal-eks-nodegroup.yml"
+               - "sponsor-portal-eks-nodegroup1-parm-$DEV_ENVIRONMENT.json"
+
+      - step:
+          name: EKS node group 2
+          script:
+            - export PARAMETERS=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json)
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-eks-nodegroup-2"
+                TEMPLATE: "./eks-nodegroup.yml"
+                CAPABILITIES: ['CAPABILITY_NAMED_IAM']
+                WAIT: 'true'
+                STACK_PARAMETERS: $PARAMETERS
+          condition:
+            changesets:
+             includePaths:
+              - "eks-nodegroup.yml"
+              - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
+          # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
+          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
+          name: Update Node Group 2 vesion
+          image: atlassian/pipelines-awscli:1.16.302
+          script:
+            - apk add jq
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - export NODE_LABEL=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - export TEMPLATE_VERSION=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --query 'LaunchTemplates[].LatestVersionNumber' --output text)
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+          condition:
+            changesets:
+              includePaths:
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: K8S metric server
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'k8s-metrics-server.yaml'
+          condition:
+            changesets:
+              includePaths:
+               - "k8s-metrics-server.yaml"
+          # Add the example command below to each pod that needs hpa enabled on
+            #kubectl autoscale deployment DEPLOYMENTNAME --cpu-percent=50 --min=1 --max=10
+
+          # Below will check to see if the HPA is enabled and details
+            #kubectl describe hpa
+
+      - step:
+          name: Cluster Autoscaler
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl apply -f cluster-autoscaler-autodiscover_$BITBUCKET_BRANCH.yaml
+            - kubectl -n kube-system annotate --overwrite deployment.apps/cluster-autoscaler cluster-autoscaler.kubernetes.io/safe-to-evict="false"
+            - kubectl -n kube-system set image deployment.apps/cluster-autoscaler cluster-autoscaler=gcr.io/k8s-artifacts-prod/autoscaling/cluster-autoscaler:v1.17.4
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Update ConfigMap
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - 'SSOROLE="    - rolearn: arn:aws:iam::ACCOUNTID:role/ROLENAME\n      username: build\n      groups:\n        - system:masters"'
+            - 'kubectl get -n kube-system configmap/aws-auth -o yaml | awk "/mapRoles: \|/{print;print \"$SSOROLE\";next}1" > /tmp/aws-auth-patch.yml'
+            - kubectl patch configmap/aws-auth -n kube-system --patch "$(cat /tmp/aws-auth-patch.yml)"
+            - 'IAMUSER="  mapUsers: \|\n    - userarn: arn:aws:iam::ACCOUNTID:user/bitbucket-eks-admin\n      username: bitbucket-eks-admin\n      groups:\n        - system:masters"'
+            - 'kubectl get -n kube-system configmap/aws-auth -o yaml | awk "/data:/{print;print \"$IAMUSER\";next}1" > /tmp/aws-auth-patch.yml'
+            - kubectl patch configmap/aws-auth -n kube-system --patch "$(cat /tmp/aws-auth-patch.yml)"
+          condition:
+            changesets:
+              includePaths:
+               - "sponsor-portal-eks-cluster.yml"
+               - "sponsor-portal-eks-cluster-parm-$DEV_ENVIRONMENT.json"
+
+      - step:
+          name: OpenID connect for Ingress Controller
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - eksctl utils associate-iam-oidc-provider --cluster=eks-cluster-$BITBUCKET_BRANCH --approve
+          condition:
+            changesets:
+              includePaths:
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Ingress Controller IAM role
+          script:
+            - pipe: atlassian/aws-cloudformation-deploy:0.9.2
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                STACK_NAME: "$BITBUCKET_BRANCH-ingress-controller"
+                TEMPLATE: "./eks-ingress-controller.yml"
+                WAIT: 'true'
+                CAPABILITIES: ['CAPABILITY_IAM', 'CAPABILITY_AUTO_EXPAND', 'CAPABILITY_NAMED_IAM']
+                STACK_PARAMETERS: >
+                      [{
+                        "ParameterKey": "EnvironmentName",
+                        "ParameterValue": $BITBUCKET_BRANCH
+                      }]
+          condition:
+            changesets:
+              includePaths:
+               - "eks-ingress-controller.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: RBAC policy for Ingress controller
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'alb-ingress-rbac.yml'
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Associate IAM role to EKS Service account for ingress controller
+          image: alpine/k8s:1.18.2
+          script:
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl annotate serviceaccount -n kube-system alb-ingress-controller eks.amazonaws.com/role-arn=arn:aws:iam::ACCOUNTID:role/eks-alb-ingress-controller-$BITBUCKET_BRANCH --overwrite
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"
+
+      - step:
+          name: Deploy Ingress controller
+          script:
+            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
+              variables:
+                AWS_DEFAULT_REGION: "us-east-1"
+                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
+                KUBECTL_COMMAND: 'apply'
+                RESOURCE_PATH: 'alb-ingress-controller-$BITBUCKET_BRANCH.yml'
+          condition:
+            changesets:
+              includePaths:
+               - "alb-ingress-controller-$BITBUCKET_BRANCH.yml"
+               - "alb-ingress-rbac.yml"
+               - "eks-cluster.yml"
+               - "eks-cluster-parm-$BITBUCKET_BRANCH.json"

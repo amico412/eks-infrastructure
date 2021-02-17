@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  Create OIDC provider
+
+Parameters:
+  EnvironmentName:
+    Type: String 
+
+Resources:
+#-----     IAM Policy     -----#
+  ALBcontrollerPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: !Sub ALBIngressControllerIAMPolicy-${EnvironmentName}
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'acm:DescribeCertificate'
+              - 'acm:ListCertificates'
+              - 'acm:GetCertificate'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'ec2:AuthorizeSecurityGroupIngress'
+              - 'ec2:CreateSecurityGroup'
+              - 'ec2:CreateTags'
+              - 'ec2:DeleteTags'
+              - 'ec2:DeleteSecurityGroup'
+              - 'ec2:DescribeAccountAttributes'
+              - 'ec2:DescribeAddresses'
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeInstanceStatus'
+              - 'ec2:DescribeInternetGateways'
+              - 'ec2:DescribeNetworkInterfaces'
+              - 'ec2:DescribeSecurityGroups'
+              - 'ec2:DescribeSubnets'
+              - 'ec2:DescribeTags'
+              - 'ec2:DescribeVpcs'
+              - 'ec2:ModifyInstanceAttribute'
+              - 'ec2:ModifyNetworkInterfaceAttribute'
+              - 'ec2:RevokeSecurityGroupIngress'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'elasticloadbalancing:AddListenerCertificates'
+              - 'elasticloadbalancing:AddTags'
+              - 'elasticloadbalancing:CreateListener'
+              - 'elasticloadbalancing:CreateLoadBalancer'
+              - 'elasticloadbalancing:CreateRule'
+              - 'elasticloadbalancing:CreateTargetGroup'
+              - 'elasticloadbalancing:DeleteListener'
+              - 'elasticloadbalancing:DeleteLoadBalancer'
+              - 'elasticloadbalancing:DeleteRule'
+              - 'elasticloadbalancing:DeleteTargetGroup'
+              - 'elasticloadbalancing:DeregisterTargets'
+              - 'elasticloadbalancing:DescribeListenerCertificates'
+              - 'elasticloadbalancing:DescribeListeners'
+              - 'elasticloadbalancing:DescribeLoadBalancers'
+              - 'elasticloadbalancing:DescribeLoadBalancerAttributes'
+              - 'elasticloadbalancing:DescribeRules'
+              - 'elasticloadbalancing:DescribeSSLPolicies'
+              - 'elasticloadbalancing:DescribeTags'
+              - 'elasticloadbalancing:DescribeTargetGroups'
+              - 'elasticloadbalancing:DescribeTargetGroupAttributes'
+              - 'elasticloadbalancing:DescribeTargetHealth'
+              - 'elasticloadbalancing:ModifyListener'
+              - 'elasticloadbalancing:ModifyLoadBalancerAttributes'
+              - 'elasticloadbalancing:ModifyRule'
+              - 'elasticloadbalancing:ModifyTargetGroup'
+              - 'elasticloadbalancing:ModifyTargetGroupAttributes'
+              - 'elasticloadbalancing:RegisterTargets'
+              - 'elasticloadbalancing:RemoveListenerCertificates'
+              - 'elasticloadbalancing:RemoveTags'
+              - 'elasticloadbalancing:SetIpAddressType'
+              - 'elasticloadbalancing:SetSecurityGroups'
+              - 'elasticloadbalancing:SetSubnets'
+              - 'elasticloadbalancing:SetWebAcl'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'iam:CreateServiceLinkedRole'
+              - 'iam:GetServerCertificate'
+              - 'iam:ListServerCertificates'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'cognito-idp:DescribeUserPoolClient'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'waf-regional:GetWebACLForResource'
+              - 'waf-regional:GetWebACL'
+              - 'waf-regional:AssociateWebACL'
+              - 'waf-regional:DisassociateWebACL'
+              - 'wafv2:GetWebACL'
+              - 'wafv2:GetWebACLForResource'
+              - 'wafv2:AssociateWebACL'
+              - 'wafv2:DisassociateWebACL'
+              - 'waf:GetWebACL'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'tag:GetResources'
+              - 'tag:TagResources'
+            Resource: '*'
+          - Effect: Allow
+            Action: 
+              - 'shield:DescribeProtection'
+              - 'shield:GetSubscriptionState'
+              - 'shield:DeleteProtection'
+              - 'shield:CreateProtection'
+              - 'shield:DescribeSubscription'
+              - 'shield:ListProtections'
+            Resource: '*'
+      Roles:
+        - !Ref IngressControllerRole
+
+#-----     IAM Roles     -----#
+  IngressControllerRole:
+      Type: AWS::IAM::Role
+      DependsOn: ClusterOIDCURL
+      Properties:
+        RoleName: !Sub eks-alb-ingress-controller-${EnvironmentName}
+        AssumeRolePolicyDocument: !Sub |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/${ClusterOIDCURL.oidc}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${ClusterOIDCURL.oidc}:sub": "system:serviceaccount:kube-system:alb-ingress-controller"
+                  }
+                }
+              }
+            ]
+          }
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - iam:*OpenIDConnectProvider*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+#-----     Lambda     -----#
+  ClusterOIDCURL:
+      Type: Custom::ClusterOIDCURL
+      Properties:
+        ServiceToken: !GetAtt ClusterOIDCURLFunction.Arn
+        cluster_name: !Sub eks-cluster-${EnvironmentName}
+
+  ClusterOIDCURLFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import boto3
+          import json
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+              oidc_response = ''
+              responseData = {}
+              try:
+                  if event['RequestType'] == 'Delete':
+                      print("Request Type:",event['RequestType'])
+                      print("Delete Request - No Physical resources to delete")
+                  elif event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      print("Request Type:",event['RequestType'])
+                      cluster_name = event['ResourceProperties']['cluster_name']
+                      oidc_response_url = fetchClusterOIDC(cluster_name)
+                      oidc_response=oidc_response_url.split("https://")[1]
+                      responseData['oidc'] = oidc_response
+                  print("Sending response to custom resource for event type " + event['RequestType'])
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "CustomResourcePhysicalID")
+                  return oidc_response
+              except Exception as e:
+                  print('Failed to process:', e)
+                  responseStatus = 'FAILURE'
+                  responseData = {'Failure': 'Something bad happened.'}
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, "CustomResourcePhysicalID")
+          def fetchClusterOIDC(cluster_name):
+              print("Getting Cluster OIDC value for cluster name "+ cluster_name)
+              oidc = ''
+              client = boto3.client('eks')
+              try:
+                  response = client.describe_cluster(
+                      name=cluster_name
+                  )
+                  if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+                      print("Success response recieved for describing cluster "+ cluster_name)
+                      oidc = (response['cluster']['identity']['oidc']['issuer'])
+                      print('OIDC output recieved '+ oidc + ' for Cluster Name ' + cluster_name)
+                  return oidc
+              except Exception as e:
+                  print('Failed to fetch Cluster OIDC value for cluster name ' + cluster_name, e)

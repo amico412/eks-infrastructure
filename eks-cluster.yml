@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  Create EKS cluster 
+  
+Parameters:
+  EnvironmentName:
+    Type: String 
+
+  EKSversion: 
+    Type: String
+
+Resources:
+#-----     IAM Roles     -----#
+  EKSClusterRole: 
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub eks-cluster-role-${EnvironmentName}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "eks.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+
+  EKSNodeRole: 
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub eks-node-role-${EnvironmentName}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+
+  EKSNodePolicy: 
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties: 
+      ManagedPolicyName: !Sub eks-node-policy-${EnvironmentName}
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Action:
+              - "autoscaling:DescribeAutoScalingGroups"
+              - "autoscaling:DescribeAutoScalingInstances"
+              - "autoscaling:DescribeLaunchConfigurations"
+              - "autoscaling:DescribeTags"
+              - "autoscaling:SetDesiredCapacity"
+              - "autoscaling:TerminateInstanceInAutoScalingGroup"
+              - "ec2:DescribeLaunchTemplateVersions"
+            Resource: "*"
+      Roles: 
+        - !Ref EKSNodeRole
+
+  EKSNodeProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub eks-node-profile-${EnvironmentName}
+      Roles:
+        - !Ref EKSNodeRole
+        
+#-----     EKS Cluster     -----#
+  EKSCluster:
+    Type: 'AWS::EKS::Cluster'
+    Properties: 
+      #CloudFormation cannot update a stack when a custom-named resource requires replacing
+      Name: !Sub eks-cluster-${EnvironmentName}
+      Version: !Ref EKSversion
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+       SecurityGroupIds:
+        - !ImportValue
+         'Fn::Sub': '${EnvironmentName}-eks-sg' 
+       SubnetIds:
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-public-subnet1'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-public-subnet2'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-private-subnet1'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-private-subnet2'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-data-subnet1'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-data-subnet2'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-eks-subnet1'
+        - !ImportValue 
+         'Fn::Sub': '${EnvironmentName}-eks-subnet2'
+
+Outputs:
+  EKSCluster:
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub "${EnvironmentName}-eks-cluster"
+
+  EKSNodeRole:
+    Value: !GetAtt EKSNodeRole.Arn
+    Export:
+      Name: !Sub "${EnvironmentName}-eks-node-role"

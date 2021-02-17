@@ -1,0 +1,30 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "production"
+  },
+  {
+    "ParameterKey": "Label",
+    "ParameterValue": "ng-1"
+  },
+  {
+    "ParameterKey": "NodeMin",
+    "ParameterValue": "2"
+  },
+  {
+    "ParameterKey": "NodeMax",
+    "ParameterValue": "6"
+  },
+  {
+    "ParameterKey": "NodeDesired",
+    "ParameterValue": "2"
+  },
+  {
+    "ParameterKey": "NodeInstanceType",
+    "ParameterValue": "t3.medium"
+  },
+  {
+    "ParameterKey": "KeyName",
+    "ParameterValue": "eks-node-key-pair-production"
+  }
+]
