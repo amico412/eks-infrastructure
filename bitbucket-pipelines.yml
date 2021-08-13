@@ -113,27 +113,47 @@ pipelines:
       - step:
           # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
           # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
-          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
-          name: Update Node Group 1 vesion
+          # Also checking to make sure the Cluster K8s version matches the node group AMI version
+          name: Update Node Group 1
           image: atlassian/pipelines-awscli:1.16.302
           script:
+            - # Install jq to parse json
             - apk add jq
+            - # Read credentials from Bitbucket variables
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - # Get the node group label from CloudFormation template parameter file
             - export NODE_LABEL=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - # Connect to the node group and set variables for the default version and latest version
             - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
             - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - # If statement to compare version and modify the node group if they dont match
             - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
             - echo DefaultVersion matches LatestVersion
             - else 
-            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $LATEST_VER
             - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - # This waits for the node group to update before moving on in the pipeline
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+            - # Connect to the cluster and node group to match sure the Kubernetes versions match. If using custom AMIs then comment out the next two lines
+            - export NODE_VER=$(aws eks describe-nodegroup --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group | jq -r .nodegroup.version)
+            - export CLUSTER_VER=$(aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH | jq -r .cluster.version)
+            - # If they dont match then force an update on the node group to update the AMI. If using custom AMIs then comment out the IF STATEMENT below
+            - if [ "$NODE_VER" == "$CLUSTER_VER" ]; then
+            - echo Node group version matches cluster version
+            - else 
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - # end the script
             - fi
           condition:
             changesets:
               includePaths:
-               - "sponsor-portal-eks-nodegroup.yml"
-               - "sponsor-portal-eks-nodegroup1-parm-$DEV_ENVIRONMENT.json"
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
 
       - step:
           name: EKS node group 2
@@ -156,36 +176,72 @@ pipelines:
       - step:
           # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
           # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
-          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
-          name: Update Node Group 2 vesion
+          # Also checking to make sure the Cluster K8s version matches the node group AMI version
+          name: Update Node Group 2
           image: atlassian/pipelines-awscli:1.16.302
           script:
+            - # Install jq to parse json
             - apk add jq
+            - # Read credentials from Bitbucket variables
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - # Get the node group label from CloudFormation template parameter file
             - export NODE_LABEL=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
-            - export TEMPLATE_VERSION=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --query 'LaunchTemplates[].LatestVersionNumber' --output text)
-            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - # Connect to the node group and set variables for the default version and latest version
+            - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
+            - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - # If statement to compare version and modify the node group if they dont match
+            - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
+            - echo DefaultVersion matches LatestVersion
+            - else 
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $LATEST_VER
             - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - # This waits for the node group to update before moving on in the pipeline
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+            - # Connect to the cluster and node group to match sure the Kubernetes versions match. If using custom AMIs then comment out the next two lines
+            - export NODE_VER=$(aws eks describe-nodegroup --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group | jq -r .nodegroup.version)
+            - export CLUSTER_VER=$(aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH | jq -r .cluster.version)
+            - # If they dont match then force an update on the node group to update the AMI. If using custom AMIs then comment out the IF STATEMENT below
+            - if [ "$NODE_VER" == "$CLUSTER_VER" ]; then
+            - echo Node group version matches cluster version
+            - else 
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - # end the script
+            - fi
           condition:
             changesets:
               includePaths:
                - "eks-nodegroup.yml"
-               - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
 
       - step:
-          name: K8S metric server
+          name: K8s monitoring
+          image: alpine/k8s:1.18.2
           script:
-            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
-              variables:
-                AWS_DEFAULT_REGION: "us-east-1"
-                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
-                KUBECTL_COMMAND: 'apply'
-                RESOURCE_PATH: 'k8s-metrics-server.yaml'
-          condition:
-            changesets:
-              includePaths:
-               - "k8s-metrics-server.yaml"
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl apply -f ./monitoring/k8s-metrics-server.yaml
+            - helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            - helm repo add grafana https://grafana.github.io/helm-charts
+            - helm repo update
+            - kubectl apply -f ./monitoring/monitoring_namespace.yaml
+            - helm upgrade --install prometheus prometheus-community/prometheus -n monitoring --values ./monitoring/prometheus-values.yaml
+            - helm upgrade --install loki-stack grafana/loki-stack -n monitoring --values ./monitoring/loki-values.yaml
+            - helm upgrade --install grafana grafana/grafana -n monitoring --values ./monitoring/grafana-values-$DEV_ENVIRONMENT.yaml
+
+          #condition:
+          #  changesets:
+          #    includePaths:
+          #     - "k8s-metrics-server.yaml"
+          #     - "prometheus-values.yaml"
+          #     - "loki-values.yaml"
+          #     - "grafana-values.yaml"
+
           # Add the example command below to each pod that needs hpa enabled on
             #kubectl autoscale deployment DEPLOYMENTNAME --cpu-percent=50 --min=1 --max=10
 
@@ -395,27 +451,47 @@ pipelines:
       - step:
           # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
           # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
-          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
-          name: Update Node Group 1 vesion
+          # Also checking to make sure the Cluster K8s version matches the node group AMI version
+          name: Update Node Group 1
           image: atlassian/pipelines-awscli:1.16.302
           script:
+            - # Install jq to parse json
             - apk add jq
+            - # Read credentials from Bitbucket variables
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - # Get the node group label from CloudFormation template parameter file
             - export NODE_LABEL=$(cat ./eks-nodegroup1-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
+            - # Connect to the node group and set variables for the default version and latest version
             - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
             - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - # If statement to compare version and modify the node group if they dont match
             - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
             - echo DefaultVersion matches LatestVersion
             - else 
-            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $LATEST_VER
             - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - # This waits for the node group to update before moving on in the pipeline
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+            - # Connect to the cluster and node group to match sure the Kubernetes versions match. If using custom AMIs then comment out the next two lines
+            - export NODE_VER=$(aws eks describe-nodegroup --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group | jq -r .nodegroup.version)
+            - export CLUSTER_VER=$(aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH | jq -r .cluster.version)
+            - # If they dont match then force an update on the node group to update the AMI. If using custom AMIs then comment out the IF STATEMENT below
+            - if [ "$NODE_VER" == "$CLUSTER_VER" ]; then
+            - echo Node group version matches cluster version
+            - else 
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - # end the script
             - fi
           condition:
             changesets:
               includePaths:
-               - "sponsor-portal-eks-nodegroup.yml"
-               - "sponsor-portal-eks-nodegroup1-parm-$DEV_ENVIRONMENT.json"
+               - "eks-nodegroup.yml"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
 
       - step:
           name: EKS node group 2
@@ -438,36 +514,72 @@ pipelines:
       - step:
           # limitation with CF that you cant use LatestVersion in node group with Launch templates so needed to move this outside of CF
           # Exporting the latest version to a variable then modifying the launch template and trigger a node group update on EKS
-          # Should add some logic to check if the latest version is already set as this does cause the cluster to do a quick update check. No outage has been noticed though, just cleaner
-          name: Update Node Group 2 vesion
+          # Also checking to make sure the Cluster K8s version matches the node group AMI version
+          name: Update Node Group 2
           image: atlassian/pipelines-awscli:1.16.302
           script:
+            - # Install jq to parse json
             - apk add jq
+            - # Read credentials from Bitbucket variables
             - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
             - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - # Get the node group label from CloudFormation template parameter file
             - export NODE_LABEL=$(cat ./eks-nodegroup2-parm-$BITBUCKET_BRANCH.json | jq -r '.[] | select(.ParameterKey=="Label") | .ParameterValue')
-            - export TEMPLATE_VERSION=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --query 'LaunchTemplates[].LatestVersionNumber' --output text)
-            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $TEMPLATE_VERSION
+            - # Connect to the node group and set variables for the default version and latest version
+            - export DEFAULT_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].DefaultVersionNumber)
+            - export LATEST_VER=$(aws ec2 describe-launch-templates --launch-template-names $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template | jq -r .LaunchTemplates[].LatestVersionNumber)
+            - # If statement to compare version and modify the node group if they dont match
+            - if [ "$DEFAULT_VER" == "$LATEST_VER" ]; then
+            - echo DefaultVersion matches LatestVersion
+            - else 
+            - aws ec2 modify-launch-template --launch-template-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-launch-template --default-version $LATEST_VER
             - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - # This waits for the node group to update before moving on in the pipeline
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - fi
+            - # Connect to the cluster and node group to match sure the Kubernetes versions match. If using custom AMIs then comment out the next two lines
+            - export NODE_VER=$(aws eks describe-nodegroup --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group | jq -r .nodegroup.version)
+            - export CLUSTER_VER=$(aws eks describe-cluster --region us-east-1 --name eks-cluster-$BITBUCKET_BRANCH | jq -r .cluster.version)
+            - # If they dont match then force an update on the node group to update the AMI. If using custom AMIs then comment out the IF STATEMENT below
+            - if [ "$NODE_VER" == "$CLUSTER_VER" ]; then
+            - echo Node group version matches cluster version
+            - else 
+            - aws eks update-nodegroup-version --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - sleep 30
+            - aws eks wait nodegroup-active --region us-east-1 --cluster-name eks-cluster-$BITBUCKET_BRANCH --nodegroup-name $BITBUCKET_BRANCH-eks-$NODE_LABEL-node-group
+            - # end the script
+            - fi
           condition:
             changesets:
               includePaths:
                - "eks-nodegroup.yml"
-               - "eks-nodegroup2-parm-$BITBUCKET_BRANCH.json"
+               - "eks-nodegroup1-parm-$BITBUCKET_BRANCH.json"
 
       - step:
-          name: K8S metric server
+          name: K8s monitoring
+          image: alpine/k8s:1.18.2
           script:
-            - pipe: atlassian/aws-eks-kubectl-run:1.2.0
-              variables:
-                AWS_DEFAULT_REGION: "us-east-1"
-                CLUSTER_NAME: eks-cluster-$BITBUCKET_BRANCH
-                KUBECTL_COMMAND: 'apply'
-                RESOURCE_PATH: 'k8s-metrics-server.yaml'
-          condition:
-            changesets:
-              includePaths:
-               - "k8s-metrics-server.yaml"
+            - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+            - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+            - aws --region us-east-1 eks update-kubeconfig --name eks-cluster-$BITBUCKET_BRANCH
+            - kubectl apply -f ./monitoring/k8s-metrics-server.yaml
+            - helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            - helm repo add grafana https://grafana.github.io/helm-charts
+            - helm repo update
+            - kubectl apply -f ./monitoring/monitoring_namespace.yaml
+            - helm upgrade --install prometheus prometheus-community/prometheus -n monitoring --values ./monitoring/prometheus-values.yaml
+            - helm upgrade --install loki-stack grafana/loki-stack -n monitoring --values ./monitoring/loki-values.yaml
+            - helm upgrade --install grafana grafana/grafana -n monitoring --values ./monitoring/grafana-values-$DEV_ENVIRONMENT.yaml
+
+          #condition:
+          #  changesets:
+          #    includePaths:
+          #     - "k8s-metrics-server.yaml"
+          #     - "prometheus-values.yaml"
+          #     - "loki-values.yaml"
+          #     - "grafana-values.yaml"
+
           # Add the example command below to each pod that needs hpa enabled on
             #kubectl autoscale deployment DEPLOYMENTNAME --cpu-percent=50 --min=1 --max=10
 
